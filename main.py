@@ -4,6 +4,7 @@
 # Date: May, 2019                                                              #
 #################################################
 
+import argparse
 import os
 import h5py
 import numpy as np
@@ -12,12 +13,12 @@ from scipy.stats import entropy
 from sklearn.externals import joblib
 from methods.logistic_regression import LogisticRegression
 from methods.lda import LinearDiscriminantAnalysis
-#from sklearn.linear_model import LogisticRegression
-#from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from methods.cnn import CNN
+
 from thundersvm import SVC
 from sklearn.svm import SVC as SVCCPU
-from data_processing.gen_bbox import crop_face, base_dir
-from cnn import CNN
+from data_processing.gen_bbox import crop_face, base_dir, \
+    visualize_face, hog_visualize
 from skimage.feature import hog
 
 
@@ -145,6 +146,7 @@ def nms(pos_lis, threshold):
 
 # filter out unreliable detection results using color entropy.
 def color_entropy_filtering(cand_lis, threshold):
+    cand_idx_lis = []
     final_cand_lis = []
     for i in range(len(cand_lis)):
         cand = cand_lis[i]
@@ -153,8 +155,9 @@ def color_entropy_filtering(cand_lis, threshold):
         cand_entropy = entropy(color_histogram)
         if cand_entropy >= threshold:
             final_cand_lis.append(cand)
+            cand_idx_lis.append(i)
             print(i, cand_entropy, threshold)
-    return final_cand_lis
+    return final_cand_lis, cand_idx_lis
 
 
 def detect(model, img_fn):
@@ -203,7 +206,7 @@ def detect(model, img_fn):
             cropped_lis.append(cv2.resize(crop_face(img_fn, *cand[:-1]), (96,96)))
 
         # color entropy filtering
-        cropped_lis = color_entropy_filtering(cropped_lis, 5.0)
+        cropped_lis, cand_idx_lis = color_entropy_filtering(cropped_lis, 5.0)
         
         # no result, continue
         if len(cropped_lis) == 0:
@@ -214,18 +217,22 @@ def detect(model, img_fn):
 
         cv2.imwrite('test1.png', cropped_lis)
 
-        break
+        return [tuple(nms_cands2[i][:-1]) for i in cand_idx_lis]
 
-if __name__ == '__main__':
-    img_fn = '2002/08/11/big/img_286.jpg'
     
-    
+def loading_data():
     # For HOG-based linear models.
     
-    db = h5py.File('data_processing/fddb_hog_train.h5')
+    try:
+        db = h5py.File('data_processing/fddb_hog_train.h5')
+    except:
+        print("h5py database is non-existent! Please run data processing first.")
+        return
+    
     train_data = db['data'][...]
     train_label = db['label'][...].astype(np.int32)
-
+    db.close()
+    
     idx = np.arange(train_data.shape[0])
     np.random.shuffle(idx)
     train_data = train_data[idx, :]
@@ -235,7 +242,7 @@ if __name__ == '__main__':
     db = h5py.File('data_processing/fddb_hog_test.h5')
     test_data = db['data'][...]
     test_label = db['label'][...].astype(np.int32)
-    
+    db.close()
     
     # CNN data
     
@@ -280,33 +287,126 @@ if __name__ == '__main__':
     cnn_train_label = np.concatenate(cnn_train_label)
     cnn_test_data = np.vstack(cnn_test_data)
     cnn_test_label = np.concatenate(cnn_test_label)
+    return train_data, train_label, test_data, test_label, cnn_train_data, \
+        cnn_train_label, cnn_test_data, cnn_test_label
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Face classification and detection with linear models.')
+
+    parser.add_argument('--model', default='logistic', type=str, help='The model used for face classification.')
+    parser.add_argument('--svm', default='linear', type=str, help='Type of SVM, enabled if we are using SVMs.')
+    parser.add_argument('--detection', default='False', type=str, help='Whether to detect.')
+    parser.add_argument('--vishog', default='False', type=str, help='Whether to visualize HOG features.')
+    parser.add_argument('--vissv', default='False', type=str, help='Whether to visualize supporting vectors.')
+    parser.add_argument('--train', default='True', type=str, help='Whether to train the model.')
     
-    # Ken: I believe the probability calculation in LDA/SVM can be wrong.
+    args = parser.parse_args()
+    args.detection = False if args.detection.lower() != 'true' else True
+    args.vishog = False if args.vishog.lower() != 'true' else True
+    args.vissv = False if args.vissv.lower() != 'true' else True
+    args.train = False if args.train.lower() != 'true' else True
     
-    # Logistic -> 0.9651
-    #model = LogisticRegression()
-    # LDA -> 0.9664 (Ken: I think ours accuracy is too low, around 0.8621)
-    #model = LinearDiscriminantAnalysis()
-    # SVM-linear -> 0.9658
-    #model = SVC(kernel='linear')
-    # SVM-rbf: gamma = 0.8 -> 0.9764
-    model = SVC(kernel='rbf', gamma=0.8)
-    # SVM-polynomial: degree = 3, gamma = 0.8 -> 0.9778
-    #model = SVC(kernel='polynomial', degree=3, gamma=0.8)
+    if args.model.lower() == 'svm':
+        args.train = True
     
-    model.fit(train_data, train_label)
-    # Visualize support vectors.
-    """
-    sv = np.random.choice(model.support_,10)
-    sv_samples = cnn_train_data[sv]
-    sv_samples = sv_samples.transpose(0,2,3,1).reshape(-1,96,3)
-    cv2.imwrite("sv.png", sv_samples)
-    """
-    
-    # CNN -> 0.9820
-    #model = CNN()
-    #model.fit(train_data, train_label)
-    model.score(test_data, test_label)
+    print("Loading database......")
+    ret = loading_data()
+    if ret is not None:
+        train_data, train_label, test_data, test_label, cnn_train_data, \
+            cnn_train_label, cnn_test_data, cnn_test_label = ret
+    else:
+        exit(1)
     
     
-    #detect(model, img_fn)
+    print("Creating model......")
+    
+    args.model = args.model.lower()
+    args.svm = args.svm.lower()
+    
+    if args.model == 'logistic':
+        # Logistic -> 0.9651
+        model = LogisticRegression()
+    elif args.model == 'lda':
+        # LDA -> 0.9656
+        model = LinearDiscriminantAnalysis()
+    elif args.model == 'svm':
+        
+        if args.svm == 'linear':
+            # SVM-linear -> 0.9658
+            model = SVC(kernel='linear')
+        elif args.svm == 'rbf':
+            # SVM-rbf: gamma = 0.8 -> 0.9764
+            model = SVC(kernel='rbf', gamma=0.8)
+        elif args.svm == 'poly':
+            # SVM-polynomial: degree = 3, gamma = 0.8 -> 0.9778
+            model = SVC(kernel='polynomial', degree=3, gamma=0.8)
+        else:
+            raise NotImplementedError
+    elif args.model == 'cnn':
+        # CNN -> 0.9869
+        model = CNN()
+    else:
+        raise NotImplementedError
+    
+    if args.train:
+        print("Training %s......"%args.model)
+        if args.model != 'cnn':
+            model.fit(train_data, train_label)
+        else:
+            model.fit(cnn_train_data, cnn_train_label)
+    
+    print("Predicting with trained %s......"%args.model)
+    if args.model != 'cnn':
+        print(model.score(test_data, test_label))
+    else:
+        print(model.score(cnn_test_data, cnn_test_label))
+    
+    # Visualize Supporting Vectors.
+    if args.model == 'svm' and args.vissv:
+        print("Visualizing support vectors ......")
+        sv_array = []
+        rows = 3
+        cols = 4
+        sv = np.random.choice(model.support_, rows*cols)
+        sv_samples = cnn_train_data[sv]
+        sv_labels = cnn_train_label[sv]
+        for i in range(rows):
+            sv_array.append([])
+            for j in range(cols):
+                sample = sv_samples[i*cols+j].transpose(1,2,0)
+                if sv_labels[i*cols+j] == 1:
+                    sample = cv2.rectangle(sample, (0, 0), (93, 93), (0,255,0), 3)
+                else:
+                    sample = cv2.rectangle(sample, (0, 0), (93, 93), (0,0,255), 3)
+                sv_array[-1].append(sample)
+        sv_array = np.array(sv_array).astype(np.uint8)
+        sv_array = sv_array.transpose(0,2,1,3,4).reshape(96*rows, 96*cols, 3)
+        cv2.imwrite("sv.png", sv_array)
+    
+    
+    # Visualize HOG features
+    if args.vishog:
+        hog_visualize()
+    
+    
+    # Detection and Visualization
+    if args.detection:
+        print("Detecting......")
+        fold_file = 'data/fddb/FDDB-folds/FDDB-fold-10.txt'
+        with open(fold_file, 'r') as f:
+            lines = f.readlines()
+        lines.sort()
+        candidates = lines
+        model = LogisticRegression()
+        for img_fn_ in candidates:
+            img_fn = img_fn_.rstrip() + '.jpg'
+            visualized = visualize_face(img_fn)
+            if visualized is not None:
+                cv2.imwrite(img_fn.split('/')[-1].replace('.jpg', '_bbox.jpg'), visualized)
+                print("Visualized GT bounding boxes in %s."%img_fn)
+            detected = detect(model, img_fn)
+            visualized_ours = visualize_face(img_fn, detected)
+            cv2.imwrite(img_fn.split('/')[-1].replace('.jpg', '_bbox_pred.jpg'), visualized_ours)
+            print("Visualized predicted bounding boxes in %s."%img_fn)
+
