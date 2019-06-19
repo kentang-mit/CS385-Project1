@@ -13,6 +13,7 @@ The major dependencies of this project include:
 - h5py
 - cv2
 - **ThunderSVM** (The GPU version of SVM library, please refer to official document for installation)
+- Numba (Used for LDA calculation acceleration)
 - PyTorch 1.0 +
 
 Notice: The SVMs are trained with **ThunderSVM** library, which is a little bit difficult to install. You may change my code in `main.py` to use a CPU version of SVM with `sklearn` or directly contact me.
